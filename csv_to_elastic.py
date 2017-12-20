@@ -71,7 +71,8 @@ import json
 import dateutil.parser
 
 
-def main(file_path, max_rows, elastic_index, json_struct, datetime_field, elastic_type, elastic_address, id_column):
+def main(file_path, max_rows, elastic_index, json_struct, datetime_field,
+         elastic_type, elastic_address, id_column, one_request_size):
     endpoint = '/_bulk'
 
     print("")
@@ -83,17 +84,18 @@ def main(file_path, max_rows, elastic_index, json_struct, datetime_field, elasti
     headers = []
     headers_position = {}
     to_elastic_string = ""
+    to_elastic_string_table = []
     with open(file_path, 'r') as csvfile:
         reader = csv.reader(csvfile, delimiter=';', quotechar='"')
         for row in reader:
             if count == 0:
-                for iterator, col in enumerate(row):
+                for idx, col in enumerate(row):
                     headers.append(col)
-                    headers_position[col] = iterator
+                    headers_position[col] = idx
             elif max_rows is not None and count >= max_rows:
                 print('Max rows imported - exit')
                 break
-            elif len(row[0]) == 0:    # Empty rows on the end of document
+            elif len(row[headers_position[datetime_field]]) == 0:    # Empty rows on the end of document
                 print("Found empty rows at the end of document")
                 break
             else:
@@ -124,13 +126,21 @@ def main(file_path, max_rows, elastic_index, json_struct, datetime_field, elasti
                 to_elastic_string += json_string
             count += 1
 
+            if count % one_request_size == 0:
+                to_elastic_string_table.append(to_elastic_string)
+                to_elastic_string = ''
+
+    if len(to_elastic_string) > 0:
+        to_elastic_string_table.append(to_elastic_string)
+
     print('Reached end of CSV - sending to Elastic')
 
     connection = http.client.HTTPConnection(elastic_address)
-    connection.request('POST', url=endpoint, body=to_elastic_string)
-    response = connection.getresponse()
-    print("Returned status code:", response.status)
-    # body = response.read()
+    for data_chunk in to_elastic_string_table:
+        connection.request('POST', url=endpoint, body=data_chunk)
+        response = connection.getresponse()
+        print("Returned status code:", response.status)
+        request_response_body = response.read()
     return
 
 
@@ -170,10 +180,16 @@ if __name__ == '__main__':
                         type=str,
                         default=None,
                         help='If you want to have index and you have it in csv, this the argument to point to it')
+    parser.add_argument('--one-request-limit',
+                        type=int,
+                        required=False,
+                        default=5000,
+                        help='Amount of rows to insert with one request')
 
     parsed_args = parser.parse_args()
 
     main(file_path=parsed_args.csv_file, json_struct=parsed_args.json_struct,
          elastic_index=parsed_args.elastic_index, elastic_type=parsed_args.elastic_type,
          datetime_field=parsed_args.datetime_field, max_rows=parsed_args.max_rows,
-         elastic_address=parsed_args.elastic_address, id_column=parsed_args.id_column)
+         elastic_address=parsed_args.elastic_address, id_column=parsed_args.id_column,
+         one_request_size=parsed_args.one_request_limit)
